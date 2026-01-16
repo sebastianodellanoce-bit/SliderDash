@@ -1,0 +1,40 @@
+/* Custom styles for Google Analytics Dashboard */
+
+.main-header {
+    font-size: 2.5rem;
+    font-weight: bold;
+    margin-bottom: 1rem;
+    color: #1f2937;
+}
+
+.stMetric {
+    background-color: #f0f2f6;
+    padding: 1rem;
+    border-radius: 0.5rem;
+}
+
+.sidebar .sidebar-content {
+    background-color: #f8f9fa;
+}
+
+/* Table styling */
+.dataframe {
+    font-size: 14px;
+}
+
+/* Button styling */
+.stButton > button {
+    background-color: #4CAF50;
+    color: white;
+    border-radius: 5px;
+}
+
+.stButton > button:hover {
+    background-color: #45a049;
+}
+
+/* Download button */
+.stDownloadButton > button {
+    background-color: #2196F3;
+    color: white;
+}
