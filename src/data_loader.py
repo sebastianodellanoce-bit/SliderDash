@@ -1,26 +1,44 @@
 """Data loading functions for the Google Analytics Dashboard."""
 import pandas as pd
 import streamlit as st
-from pathlib import Path
 from datetime import datetime, timedelta
+import pytz
+
+from config.config import (
+    GA4_ROW_LIMIT,
+    GA4_DATE_RANGE_DAYS,
+    GA4_TIMEZONE,
+    CACHE_TTL_SECONDS
+)
 
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def load_csv_data(file_path: str) -> pd.DataFrame:
-    """Load data from CSV file with caching."""
-    path = Path(file_path)
-    if not path.exists():
-        st.error(f"Data file not found: {file_path}")
-        return pd.DataFrame()
+def get_gcp_credentials():
+    """
+    Get Google Cloud credentials from Streamlit secrets (for Streamlit Cloud deployment).
+    Returns credentials object or None.
+    """
+    try:
+        from google.oauth2 import service_account
 
-    df = pd.read_csv(path)
-    df['date'] = pd.to_datetime(df['date'])
-    return df
+        # Try Streamlit secrets (for Streamlit Cloud deployment)
+        if "gcp_service_account" in st.secrets:
+            credentials = service_account.Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=["https://www.googleapis.com/auth/analytics.readonly"]
+            )
+            return credentials
+    except Exception:
+        pass
+
+    return None
 
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def load_ga4_data(property_id: str, credentials_path: str = None, use_default_credentials: bool = True) -> pd.DataFrame:
-    """Load data from Google Analytics 4 API."""
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def load_ga4_data(property_id: str, credentials_path: str = None, use_default_credentials: bool = True) -> dict:
+    """
+    Load data from Google Analytics 4 API with pagination support.
+    Returns a dict with 'data' (DataFrame) and 'metadata' (info about the query).
+    """
     try:
         from google.analytics.data_v1beta import BetaAnalyticsDataClient
         from google.analytics.data_v1beta.types import (
@@ -38,73 +56,124 @@ def load_ga4_data(property_id: str, credentials_path: str = None, use_default_cr
         elif credentials_path:
             client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
         else:
-            st.error("No credentials provided for GA4 API")
-            return pd.DataFrame()
+            # Try Streamlit secrets (for Streamlit Cloud deployment)
+            gcp_creds = get_gcp_credentials()
+            if gcp_creds:
+                client = BetaAnalyticsDataClient(credentials=gcp_creds)
+            else:
+                st.error("No credentials provided for GA4 API. Add 'gcp_service_account' to Streamlit secrets.")
+                return {'data': pd.DataFrame(), 'metadata': {}}
 
-        # Define date range (last 90 days to avoid timeout)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=90)
+        # Define date range with explicit timezone
+        tz = pytz.timezone(GA4_TIMEZONE)
+        end_date = datetime.now(tz)
+        start_date = end_date - timedelta(days=GA4_DATE_RANGE_DAYS)
 
-        # Run the report
-        request = RunReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=[
-                Dimension(name="date"),
-                Dimension(name="customEvent:event_action"),
-                Dimension(name="sessionCampaignName"),
-                Dimension(name="sessionSource"),
-                Dimension(name="landingPage"),
-            ],
-            metrics=[
-                Metric(name="eventCount"),
-            ],
-            date_ranges=[
-                DateRange(
-                    start_date=start_date.strftime("%Y-%m-%d"),
-                    end_date=end_date.strftime("%Y-%m-%d")
-                )
-            ],
-            limit=250000,  # Increase row limit to get all data
-        )
+        # GA4 API has a hard limit of 250,000 rows per request
+        # We need to paginate to get all data
+        GA4_PAGE_SIZE = 250000
+        all_rows = []
+        offset = 0
+        total_pages = 0
+        max_pages = 10  # Safety limit to prevent infinite loops
 
-        response = client.run_report(request)
+        while total_pages < max_pages:
+            request = RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="date"),
+                    Dimension(name="customEvent:event_action"),
+                    Dimension(name="sessionCampaignName"),
+                    Dimension(name="sessionSource"),
+                    Dimension(name="landingPage"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                ],
+                date_ranges=[
+                    DateRange(
+                        start_date=start_date.strftime("%Y-%m-%d"),
+                        end_date=end_date.strftime("%Y-%m-%d")
+                    )
+                ],
+                limit=GA4_PAGE_SIZE,
+                offset=offset,
+            )
 
-        # Convert to DataFrame
-        rows = []
-        for row in response.rows:
-            rows.append({
-                'date': row.dimension_values[0].value,
-                'event_action': row.dimension_values[1].value,
-                'campaign': row.dimension_values[2].value or '(not set)',
-                'channel': row.dimension_values[3].value or '(not set)',
-                'url': row.dimension_values[4].value or '(not set)',
-                'count': int(row.metric_values[0].value),
-            })
+            response = client.run_report(request)
+            total_pages += 1
 
-        df = pd.DataFrame(rows)
+            # Extract rows from this page
+            page_rows = []
+            for row in response.rows:
+                page_rows.append({
+                    'date': row.dimension_values[0].value,
+                    'event_action': row.dimension_values[1].value,
+                    'campaign': row.dimension_values[2].value or '(not set)',
+                    'channel': row.dimension_values[3].value or '(not set)',
+                    'url': row.dimension_values[4].value or '(not set)',
+                    'count': int(row.metric_values[0].value),
+                })
+
+            all_rows.extend(page_rows)
+
+            # Check if we got all data (less than page size means last page)
+            if len(page_rows) < GA4_PAGE_SIZE:
+                break
+
+            # Move to next page
+            offset += GA4_PAGE_SIZE
+
+            # Check if we've reached the total row limit
+            if len(all_rows) >= GA4_ROW_LIMIT:
+                break
+
+        df = pd.DataFrame(all_rows)
         if not df.empty:
             df['date'] = pd.to_datetime(df['date'], format='%Y%m%d')
 
-        return df
+        # Metadata for debugging
+        is_truncated = (
+            len(all_rows) >= GA4_ROW_LIMIT or
+            total_pages >= max_pages
+        )
+
+        metadata = {
+            'row_count': len(df),
+            'row_limit': GA4_ROW_LIMIT,
+            'is_truncated': is_truncated,
+            'pages_fetched': total_pages,
+            'date_range_start': start_date.strftime("%Y-%m-%d"),
+            'date_range_end': end_date.strftime("%Y-%m-%d"),
+            'timezone': GA4_TIMEZONE,
+            'query_time': datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            'channel_dimension': 'sessionSource',
+        }
+
+        return {'data': df, 'metadata': metadata}
 
     except Exception as e:
         st.error(f"Error loading GA4 data: {str(e)}")
-        return pd.DataFrame()
+        return {'data': pd.DataFrame(), 'metadata': {'error': str(e)}}
 
 
 def get_data(
     property_id: str = None,
     credentials_path: str = None,
     use_default_credentials: bool = True
-) -> pd.DataFrame:
-    """Get data from Google Analytics 4 API."""
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Get data from Google Analytics 4 API.
+    Returns tuple of (DataFrame, metadata dict).
+    """
     if not property_id:
         st.error("GA4 Property ID is required")
-        return pd.DataFrame()
-    return load_ga4_data(property_id, credentials_path, use_default_credentials)
+        return pd.DataFrame(), {}
+    result = load_ga4_data(property_id, credentials_path, use_default_credentials)
+    return result['data'], result['metadata']
 
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
 def get_all_event_actions(property_id: str, credentials_path: str = None, use_default_credentials: bool = True) -> list:
     """Get ALL unique event_action values from GA4 (without other dimensions)."""
     try:
@@ -125,7 +194,12 @@ def get_all_event_actions(property_id: str, credentials_path: str = None, use_de
         elif credentials_path:
             client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
         else:
-            return []
+            # Try Streamlit secrets (for Streamlit Cloud deployment)
+            gcp_creds = get_gcp_credentials()
+            if gcp_creds:
+                client = BetaAnalyticsDataClient(credentials=gcp_creds)
+            else:
+                return []
 
         # Date range (last 90 days)
         end_date = datetime.now()
@@ -166,7 +240,7 @@ def get_all_event_actions(property_id: str, credentials_path: str = None, use_de
         return []
 
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
 def get_all_channels(property_id: str, credentials_path: str = None, use_default_credentials: bool = True) -> list:
     """Get ALL unique channel (sessionSource) values from GA4."""
     try:
@@ -187,7 +261,12 @@ def get_all_channels(property_id: str, credentials_path: str = None, use_default
         elif credentials_path:
             client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
         else:
-            return []
+            # Try Streamlit secrets (for Streamlit Cloud deployment)
+            gcp_creds = get_gcp_credentials()
+            if gcp_creds:
+                client = BetaAnalyticsDataClient(credentials=gcp_creds)
+            else:
+                return []
 
         # Date range (last 90 days)
         end_date = datetime.now()

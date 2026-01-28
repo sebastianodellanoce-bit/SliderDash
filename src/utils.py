@@ -28,17 +28,3 @@ def render_download_button(df: pd.DataFrame, key: str = "download"):
     )
 
 
-def render_data_table(df: pd.DataFrame, title: str = "Data"):
-    """Render interactive data table."""
-    st.subheader(title)
-
-    if df.empty:
-        st.info("No data available")
-        return
-
-    # Display with sorting enabled
-    st.dataframe(
-        df,
-        width="stretch",
-        hide_index=True
-    )

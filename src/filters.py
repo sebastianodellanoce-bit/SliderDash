@@ -104,31 +104,3 @@ def render_channel_filter(channels_with_counts: list) -> list:
     return selected_channels
 
 
-def render_url_filter(urls_with_counts: list) -> list:
-    """Render URL multi-select filter in sidebar."""
-    st.sidebar.subheader("URLs")
-
-    if not urls_with_counts:
-        st.sidebar.info("No URLs available")
-        return []
-
-    # Create options with counts
-    options = [f"{url} - {format_count(count)} events"
-               for url, count in urls_with_counts]
-
-    selected_options = st.sidebar.multiselect(
-        "Select URLs",
-        options=options,
-        default=[],
-        placeholder="Search URLs..."
-    )
-
-    # Extract URL names from selected options
-    selected_urls = []
-    for opt in selected_options:
-        for url, count in urls_with_counts:
-            if opt.startswith(url):
-                selected_urls.append(url)
-                break
-
-    return selected_urls

@@ -22,20 +22,18 @@ from src.filters import (
     render_campaign_filter,
     render_channel_filter,
 )
-from src.visualizations import (
-    render_event_bar_chart,
-    render_daily_trend_chart,
-    render_channel_pie_chart,
-    render_campaign_bar_chart
-)
+from src.visualizations import render_all_comparison_charts
 from src.metrics import (
     calculate_leads,
     calculate_start_rate,
     calculate_end_rate,
     calculate_registration_rate,
+    calculate_cap_success,
     render_conversion_metrics
 )
-from src.utils import render_download_button, render_data_table
+from src.utils import render_download_button
+from src.ai_analysis import render_ai_analysis
+from src.report_generator import render_report_section, init_report_session
 from config.config import (
     PAGE_TITLE, PAGE_ICON, LAYOUT,
     GA_PROPERTY_ID, GA_CREDENTIALS_PATH, USE_DEFAULT_CREDENTIALS
@@ -87,6 +85,22 @@ st.markdown("""
         color: #191970 !important;
         margin: 0 !important;
     }
+    /* Fixed height for multiselect with scrolling */
+    div[data-testid="stMultiSelect"] > div > div {
+        max-height: 120px !important;
+        overflow-y: auto !important;
+    }
+    /* Compact button styling */
+    .url-buttons {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+    .url-buttons button {
+        flex: 1;
+        padding: 0.25rem 0.5rem !important;
+        font-size: 0.85rem !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,7 +122,7 @@ st.markdown("---")
 
 # Load data
 with st.spinner("Loading GA4 data..."):
-    df = get_data(
+    df, _ = get_data(
         property_id=GA_PROPERTY_ID,
         credentials_path=GA_CREDENTIALS_PATH,
         use_default_credentials=USE_DEFAULT_CREDENTIALS
@@ -150,88 +164,68 @@ base_filtered_df = filter_data(
 available_urls = get_unique_urls(base_filtered_df)
 url_options = [url for url, count in available_urls]
 
-# =============================================================================
-# DEBUG: Show data info
-# =============================================================================
-with st.expander("Debug: View Data Info"):
-    st.write(f"**Selected Date Range:** {start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}")
-    st.write(f"**Total rows in raw data:** {len(df)}")
-    st.write(f"**Rows after date filter:** {len(base_filtered_df)}")
-    st.write(f"**Date range in raw data:** {df['date'].min().strftime('%d/%m/%Y')} - {df['date'].max().strftime('%d/%m/%Y')}")
-
-    st.write("---")
-    st.write("**Columns in DataFrame:**", df.columns.tolist())
-
-    st.write("---")
-    st.write("**Sample of raw data (first 50 rows):**")
-    st.dataframe(df.head(50))
-
-    st.write("---")
-    st.write("**All unique event_action values (from current data):**")
-    if 'event_action' in df.columns:
-        unique_events = df.groupby('event_action')['count'].sum().sort_values(ascending=False)
-        st.write(f"Total unique event_action values in current data: {len(unique_events)}")
-        st.dataframe(unique_events.reset_index())
-
-    st.write("---")
-    st.write("**ALL event_action values from GA4 (direct query without other dimensions):**")
-    all_events = get_all_event_actions(
-        property_id=GA_PROPERTY_ID,
-        credentials_path=GA_CREDENTIALS_PATH,
-        use_default_credentials=USE_DEFAULT_CREDENTIALS
-    )
-    if all_events:
-        all_events_df = pd.DataFrame(all_events).sort_values('total_count', ascending=False)
-        st.write(f"**TOTAL unique event_action values in GA4: {len(all_events_df)}**")
-        st.dataframe(all_events_df, hide_index=True)
-
-    st.write("---")
-    st.write("**ALL channels (sessionSource) from GA4 (direct query):**")
-    all_channels = get_all_channels(
-        property_id=GA_PROPERTY_ID,
-        credentials_path=GA_CREDENTIALS_PATH,
-        use_default_credentials=USE_DEFAULT_CREDENTIALS
-    )
-    if all_channels:
-        all_channels_df = pd.DataFrame(all_channels).sort_values('total_count', ascending=False)
-        st.write(f"**TOTAL unique channels in GA4: {len(all_channels_df)}**")
-        st.dataframe(all_channels_df, hide_index=True)
-
-    st.write("---")
-    st.write("**All unique URLs (landing pages):**")
-    if 'url' in df.columns:
-        unique_urls = df.groupby('url')['count'].sum().sort_values(ascending=False)
-        st.write(f"Total unique URLs: {len(unique_urls)}")
-        st.dataframe(unique_urls.head(50).reset_index())
-
-    st.write("---")
-    st.write("Checking specific events for KPI calculation:")
-    for event in ["A quale prodotto sei interessato?", "Enpal Source Cookie", "Per quale prodotto vuoi scoprire i bonus?", "slider-success"]:
-        if 'event_action' in df.columns:
-            count = df[df['event_action'].str.strip() == event]['count'].sum()
-        else:
-            count = 0
-        st.write(f"'{event}': {count:,}")
-
-# =============================================================================
-# COMPARISON VIEW - Two side-by-side columns
-# =============================================================================
+# Landing Page Comparison
 st.markdown("## Landing Page Comparison")
 
 # Create two columns for comparison
 col_old, col_new = st.columns(2)
 
+# Store url_options in session state for callbacks
+st.session_state.url_options = url_options
+
+# Callback functions (defined before columns so they capture correctly)
+def select_all_old_callback():
+    search = st.session_state.get('search_old', '')
+    opts = st.session_state.get('url_options', [])
+    filtered = [url for url in opts if search.lower() in url.lower()] if search else opts
+    # Replace selection with filtered results
+    st.session_state.url_filter_old = filtered
+
+def clear_old_callback():
+    st.session_state.url_filter_old = []
+
+def select_all_new_callback():
+    search = st.session_state.get('search_new', '')
+    opts = st.session_state.get('url_options', [])
+    filtered = [url for url in opts if search.lower() in url.lower()] if search else opts
+    # Replace selection with filtered results
+    st.session_state.url_filter_new = filtered
+
+def clear_new_callback():
+    st.session_state.url_filter_new = []
+
 # --- OLD LANDING COLUMN ---
 with col_old:
     st.markdown('<div class="comparison-header old-landing">🔶 OLD LANDING</div>', unsafe_allow_html=True)
 
-    # URL filter for Old Landing (with search built-in)
+    # Search input for Old Landing
+    search_old = st.text_input(
+        "Search URLs (Old Landing)",
+        key="search_old",
+        placeholder="Type to filter (e.g. /ar, /it/fotovoltaico...)"
+    )
+
+    # Filter options based on search (for display)
+    filtered_options_old = [url for url in url_options if search_old.lower() in url.lower()] if search_old else url_options
+
+    # Select All Matching and Clear buttons (compact layout)
+    col_btn1, col_btn2 = st.columns([1, 1], gap="small")
+    with col_btn1:
+        st.button("Select All", key="select_all_old", on_click=select_all_old_callback, disabled=len(filtered_options_old) == 0, use_container_width=True)
+    with col_btn2:
+        st.button("Clear", key="clear_old", on_click=clear_old_callback, use_container_width=True)
+
+    # Show count of matching URLs
+    if search_old:
+        st.caption(f"Found {len(filtered_options_old)} matching URLs")
+
+    # URL multiselect for Old Landing
     selected_urls_old = st.multiselect(
-        "Select URLs (Old Landing)",
+        "Selected URLs (Old Landing)",
         options=url_options,
         default=[],
         key="url_filter_old",
-        placeholder="Type to search URLs (e.g. /ar, /it/fotovoltaico...)"
+        placeholder="Select URLs or use search above"
     )
 
     # Filter data for old landing
@@ -251,11 +245,6 @@ with col_old:
     with kpi_col2:
         start_rate_old = calculate_start_rate(old_landing_df)
         st.metric(label="Start Rate", value=f"{start_rate_old:.2f}%")
-        # Temporary debug
-        if 'event_action' in old_landing_df.columns:
-            e1 = old_landing_df[old_landing_df['event_action'].str.strip() == "A quale prodotto sei interessato?"]['count'].sum()
-            e2 = old_landing_df[old_landing_df['event_action'].str.strip() == "Enpal Source Cookie"]['count'].sum()
-            st.caption(f"{e1:,} / {e2:,}")
 
     with kpi_col3:
         end_rate_old = calculate_end_rate(old_landing_df)
@@ -264,6 +253,11 @@ with col_old:
     with kpi_col4:
         reg_rate_old = calculate_registration_rate(old_landing_df)
         st.metric(label="Reg Rate", value=f"{reg_rate_old:.2f}%")
+    
+    kpi_col5, kpi_col6 = st.columns([2, 2])
+    with kpi_col5:
+        postcap_success_old = calculate_cap_success(old_landing_df)
+        st.metric(label="PostCap Success", value=f"{postcap_success_old:.2f}%")
 
     # Data table for Old Landing
     st.markdown("### Event Actions")
@@ -275,17 +269,38 @@ with col_old:
     else:
         st.info("No data available for selected filters")
 
-# --- NEW LANDING COLUMN ---
+# NEW LANDING COLUMN
 with col_new:
     st.markdown('<div class="comparison-header new-landing">🔷 NEW LANDING</div>', unsafe_allow_html=True)
 
-    # URL filter for New Landing (with search built-in)
+    # Search input for New Landing
+    search_new = st.text_input(
+        "Search URLs (New Landing)",
+        key="search_new",
+        placeholder="Type to filter (e.g. /ar, /it/fotovoltaico...)"
+    )
+
+    # Filter options based on search (for display)
+    filtered_options_new = [url for url in url_options if search_new.lower() in url.lower()] if search_new else url_options
+
+    # Select All Matching and Clear buttons (compact layout)
+    col_btn3, col_btn4 = st.columns([1, 1], gap="small")
+    with col_btn3:
+        st.button("Select All", key="select_all_new", on_click=select_all_new_callback, disabled=len(filtered_options_new) == 0, use_container_width=True)
+    with col_btn4:
+        st.button("Clear", key="clear_new", on_click=clear_new_callback, use_container_width=True)
+
+    # Show count of matching URLs
+    if search_new:
+        st.caption(f"Found {len(filtered_options_new)} matching URLs")
+
+    # URL multiselect for New Landing
     selected_urls_new = st.multiselect(
-        "Select URLs (New Landing)",
+        "Selected URLs (New Landing)",
         options=url_options,
         default=[],
         key="url_filter_new",
-        placeholder="Type to search URLs (e.g. /ar, /it/fotovoltaico...)"
+        placeholder="Select URLs or use search above"
     )
 
     # Filter data for new landing
@@ -305,11 +320,6 @@ with col_new:
     with kpi_col2:
         start_rate_new = calculate_start_rate(new_landing_df)
         st.metric(label="Start Rate", value=f"{start_rate_new:.2f}%")
-        # Temporary debug
-        if 'event_action' in new_landing_df.columns:
-            e1 = new_landing_df[new_landing_df['event_action'].str.strip() == "A quale prodotto sei interessato?"]['count'].sum()
-            e2 = new_landing_df[new_landing_df['event_action'].str.strip() == "Enpal Source Cookie"]['count'].sum()
-            st.caption(f"{e1:,} / {e2:,}")
 
     with kpi_col3:
         end_rate_new = calculate_end_rate(new_landing_df)
@@ -318,6 +328,11 @@ with col_new:
     with kpi_col4:
         reg_rate_new = calculate_registration_rate(new_landing_df)
         st.metric(label="Reg Rate", value=f"{reg_rate_new:.2f}%")
+    
+    kpi_col5, kpi_col6 = st.columns([2, 2])
+    with kpi_col5:
+        postcap_success_new = calculate_cap_success(new_landing_df)
+        st.metric(label="PostCap Success", value=f"{postcap_success_new:.2f}%")
 
     # Data table for New Landing
     st.markdown("### Event Actions")
@@ -331,60 +346,48 @@ with col_new:
 
 st.markdown("---")
 
-# =============================================================================
-# ADDITIONAL TABS (Charts and Metrics)
-# =============================================================================
-tab1, tab2 = st.tabs(["Charts", "Metrics"])
 
-with tab1:
-    # Charts using all filtered data (base_filtered_df)
-    event_data_all = aggregate_by_event_action(base_filtered_df)
+# AI ANALYSIS SECTION
+render_ai_analysis(
+    old_landing_df,
+    new_landing_df,
+    start_date.strftime('%d/%m/%Y'),
+    end_date.strftime('%d/%m/%Y')
+)
 
-    col1, col2 = st.columns(2)
+st.markdown("---")
 
-    with col1:
-        render_event_bar_chart(event_data_all)
 
-    with col2:
-        render_channel_pie_chart(base_filtered_df)
+# COMPARISON CHARTS SECTION
+st.markdown("## Comparison Charts")
+render_all_comparison_charts(old_landing_df, new_landing_df)
 
-    col3, col4 = st.columns(2)
 
-    with col3:
-        render_daily_trend_chart(base_filtered_df)
+# REPORT GENERATOR SECTION
 
-    with col4:
-        render_campaign_bar_chart(base_filtered_df)
+init_report_session()
 
-with tab2:
-    # Conversion metrics
-    render_conversion_metrics(base_filtered_df)
+# Session state per AI analysis
+if 'last_ai_analysis' not in st.session_state:
+    st.session_state.last_ai_analysis = None
 
-    st.markdown("---")
+# Filtri per report
+filters_info = {
+    'campaigns': ', '.join(selected_campaigns[:3]) + ('...' if len(selected_campaigns) > 3 else '') if selected_campaigns else 'All',
+    'channels': ', '.join(selected_channels[:3]) + ('...' if len(selected_channels) > 3 else '') if selected_channels else 'All',
+    'old_urls': ', '.join(selected_urls_old[:2]) if selected_urls_old else 'All',
+    'new_urls': ', '.join(selected_urls_new[:2]) if selected_urls_new else 'All'
+}
 
-    # Additional stats
-    st.subheader("Data Summary")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.write("**Date Range:**")
-        st.write(f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}")
-
-    with col2:
-        st.write("**Selected Campaigns:**")
-        if selected_campaigns:
-            for camp in selected_campaigns:
-                st.write(f"- {camp}")
-        else:
-            st.write("All campaigns")
-
-    with col3:
-        st.write("**Selected Channels:**")
-        if selected_channels:
-            for ch in selected_channels:
-                st.write(f"- {ch}")
-        else:
-            st.write("All channels")
+render_report_section(
+    old_df=old_landing_df,
+    new_df=new_landing_df,
+    old_landing_name=selected_urls_old[0] if selected_urls_old else "OLD Landing (All URLs)",
+    new_landing_name=selected_urls_new[0] if selected_urls_new else "NEW Landing (All URLs)",
+    date_range=f"{start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')}",
+    filters=filters_info,
+    ai_analysis=st.session_state.get('last_ai_analysis')
+)
 
 # Footer
 st.markdown("---")

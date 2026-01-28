@@ -3,43 +3,6 @@ import pandas as pd
 import streamlit as st
 
 
-def format_number(num: float) -> str:
-    """Format large numbers with K/M suffix."""
-    if num >= 1_000_000:
-        return f"{num/1_000_000:.2f}M"
-    elif num >= 1_000:
-        return f"{num/1_000:.2f}K"
-    return f"{num:,.0f}"
-
-
-def calculate_total_events(df: pd.DataFrame) -> int:
-    """Calculate total event count."""
-    if df.empty:
-        return 0
-    return int(df['count'].sum())
-
-
-def calculate_unique_campaigns(df: pd.DataFrame) -> int:
-    """Calculate number of unique campaigns."""
-    if df.empty:
-        return 0
-    return df['campaign'].nunique()
-
-
-def calculate_unique_channels(df: pd.DataFrame) -> int:
-    """Calculate number of unique channels."""
-    if df.empty:
-        return 0
-    return df['channel'].nunique()
-
-
-def calculate_unique_events(df: pd.DataFrame) -> int:
-    """Calculate number of unique event actions."""
-    if df.empty:
-        return 0
-    return df['event_action'].nunique()
-
-
 def calculate_ratio(df: pd.DataFrame, event1: str, event2: str) -> float:
     """Calculate ratio between two event actions."""
     if df.empty:
@@ -74,8 +37,8 @@ def calculate_leads(df: pd.DataFrame) -> int:
 
 
 def calculate_start_rate(df: pd.DataFrame) -> float:
-    """Calculate Start Rate: 'A quale prodotto sei interessato?' / 'Enpal Source Cookie' * 100"""
-    return calculate_ratio(df, "A quale prodotto sei interessato?", "Enpal Source Cookie")
+    """Calculate Start Rate: 'Per quale prodotto vuoi scoprire i bonus?' / 'Enpal Source Cookie' * 100"""
+    return calculate_ratio(df, "Per quale prodotto vuoi scoprire i bonus?", "Enpal Source Cookie")
 
 
 def calculate_end_rate(df: pd.DataFrame) -> float:
@@ -88,30 +51,9 @@ def calculate_registration_rate(df: pd.DataFrame) -> float:
     return calculate_ratio(df, "slider-success", "Enpal Source Cookie")
 
 
-def render_kpi_cards(df: pd.DataFrame):
-    """Render KPI cards at the top of the dashboard."""
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        start_rate = calculate_start_rate(df)
-        st.metric(
-            label="Start Rate",
-            value=f"{start_rate:.2f}%"
-        )
-
-    with col2:
-        end_rate = calculate_end_rate(df)
-        st.metric(
-            label="End Rate",
-            value=f"{end_rate:.2f}%"
-        )
-
-    with col3:
-        reg_rate = calculate_registration_rate(df)
-        st.metric(
-            label="Registration Rate",
-            value=f"{reg_rate:.2f}%"
-        )
+def calculate_cap_success(df: pd.DataFrame) -> float:
+    """Calculate CAP Success: 'slider-success' / 'Per quale tipo di edificio vuoi scoprire i bonus?' * 100"""
+    return calculate_ratio(df, "slider-success", "Per quale tipo di edificio vuoi scoprire i bonus?")
 
 
 def render_conversion_metrics(df: pd.DataFrame):
